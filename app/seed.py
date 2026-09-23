@@ -1,6 +1,7 @@
 """首次启动时初始化数据库：建表 + 内置管理员 + 种子业务数据。"""
 from datetime import datetime, timedelta
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .auth import hash_password
@@ -12,6 +13,7 @@ from .models import Station, SwapRecord, User, Vehicle
 def init_db() -> None:
     """创建所有表并灌入种子数据（幂等：已存在则跳过）。"""
     Base.metadata.create_all(bind=engine)
+    _migrate()
     db: Session = SessionLocal()
     try:
         _seed_admin(db)
@@ -19,6 +21,18 @@ def init_db() -> None:
         db.commit()
     finally:
         db.close()
+
+
+def _migrate() -> None:
+    """对旧版本库做幂等的轻量结构升级（SQLite 支持 ADD COLUMN）。"""
+    with engine.begin() as conn:
+        station_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(stations)"))}
+        if station_cols and "reserved_count" not in station_cols:
+            conn.execute(text("ALTER TABLE stations ADD COLUMN reserved_count INTEGER NOT NULL DEFAULT 0"))
+        swap_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(swap_records)"))}
+        if swap_cols and "reservation_id" not in swap_cols:
+            conn.execute(text("ALTER TABLE swap_records ADD COLUMN reservation_id INTEGER"))
+
 
 
 def _seed_admin(db: Session) -> None:

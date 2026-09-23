@@ -47,9 +47,21 @@ class StationUpdate(BaseModel):
 
 class StationOut(StationBase):
     id: int
+    # 已被有效预约锁定的电池数
+    reserved_count: int = 0
+    # 当前可预约量 = battery_ready - reserved_count
+    available: Optional[int] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class StationCapacityOut(BaseModel):
+    station_id: int
+    battery_ready: int
+    reserved_count: int
+    available: int
+
 
 
 # ---------- 车辆 ----------
@@ -80,10 +92,46 @@ class VehicleOut(VehicleBase):
     model_config = {"from_attributes": True}
 
 
-# ---------- 换电记录 ----------
-class SwapCreate(BaseModel):
+# ---------- 预约 ----------
+class ReservationCreate(BaseModel):
     vehicle_id: int
     station_id: int
+    # 预约到站时间；不传则默认为当前时间
+    reserved_for: Optional[datetime] = None
+    # 到期时间；不传则为到站时间 + 默认保留时长
+    expires_at: Optional[datetime] = None
+    # 调用方幂等键：相同键的重试返回同一预约，不重复占位
+    idempotency_key: Optional[str] = Field(None, max_length=64)
+
+
+class ReservationRenew(BaseModel):
+    # 二选一：直接给新到期时间，或在原到期时间上顺延若干分钟
+    expires_at: Optional[datetime] = None
+    extend_minutes: Optional[int] = Field(None, gt=0)
+    reserved_for: Optional[datetime] = None
+
+
+class ReservationOut(BaseModel):
+    id: int
+    vehicle_id: int
+    station_id: int
+    status: str
+    reserved_for: datetime
+    expires_at: datetime
+    idempotency_key: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    closed_at: Optional[datetime] = None
+    vehicle_plate: Optional[str] = None
+    station_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ---------- 换电记录 ----------
+class SwapCreate(BaseModel):
+    # 凭预约履约：只能消费匹配且仍有效的预约
+    reservation_id: int
     soc_before: float = Field(..., ge=0, le=100)
     soc_after: float = Field(100.0, ge=0, le=100)
 
@@ -92,6 +140,7 @@ class SwapOut(BaseModel):
     id: int
     vehicle_id: int
     station_id: int
+    reservation_id: Optional[int] = None
     soc_before: float
     soc_after: float
     swapped_at: datetime

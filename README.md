@@ -31,13 +31,37 @@ python run.py
 ## 已实现的基础功能
 
 - 登录签发 JWT、获取当前用户（`/api/auth/login`、`/api/auth/me`）
-- 换电站增删改查（`/api/stations`）
+- 换电站增删改查与实时可预约量（`/api/stations`、`/api/stations/{id}/capacity`）
 - 车辆增删改查（`/api/vehicles`）
-- 换电记录查询与登记（`/api/swaps`，会联动更新车辆电量与站点可用电池）
+- 换电预约：创建占位、续期、取消、过期释放、按状态/时间查询（`/api/reservations`）
+- 换电记录查询与凭预约履约（`/api/swaps`，原子核销预约、扣减库存、更新车辆电量）
 - 仪表盘统计（`/api/dashboard/stats`）
 - 健康检查（`/api/health`）
 
 除 `login` 与 `health` 外，所有接口均需携带 `Authorization: Bearer <token>`。
+
+## 预约与容量模型
+
+- 站点字段：`battery_ready`（满电电池）与 `reserved_count`（已被有效预约锁定数）；
+  **可预约量 `available = battery_ready - reserved_count`**，运营页面、容量接口与下单/换电使用同一口径。
+- 预约状态流转：`pending → fulfilled / cancelled / expired`。
+  - 创建：在 `BEGIN IMMEDIATE` 事务内用条件 UPDATE 锁定一份容量
+    （`WHERE battery_ready - reserved_count > 0`），并发争抢最后名额时结果确定。
+  - 同一车辆有效预约的时间窗 `[reserved_for, expires_at]` 不得重叠。
+  - `idempotency_key`：调用方重试携带相同键返回同一预约，不重复占位。
+  - 取消/到期：原子把锁定容量还回站点；到期在写操作前、查询前及服务启动时统一扫描，**重启后可继续识别**待履约与已过期预约。
+  - 续期：仅 `pending` 可续，延长到期时间，锁定容量不变，仍校验时间窗重叠。
+  - 履约：`POST /api/swaps` 只能消费“属于该车辆/站点且仍 `pending`、未过期”的预约；
+    预约核销、库存扣减、车辆电量更新、换电记录写入在**同一事务**内原子完成，重复消费只有一次成功。
+
+### 主要接口
+
+- `POST /api/reservations`：`{vehicle_id, station_id, reserved_for?, expires_at?, idempotency_key?}`
+- `POST /api/reservations/{id}/renew`：`{extend_minutes?}` 或 `{expires_at?}`
+- `POST /api/reservations/{id}/cancel`
+- `GET /api/reservations?status=&vehicle_id=&station_id=&time_from=&time_to=`
+- `POST /api/swaps`：`{reservation_id, soc_before, soc_after}`
+- `GET /api/stations/{id}/capacity`：`{battery_ready, reserved_count, available}`
 
 ## 测试
 
@@ -45,6 +69,8 @@ python run.py
 pip install -r requirements.txt
 pytest -q
 ```
+
+测试使用可固定/推进的业务时钟（`app/clock.py`），可在确定时间下验证创建、续期、取消、过期、履约与多线程并发争抢的完整状态流。
 
 ## 编码说明
 

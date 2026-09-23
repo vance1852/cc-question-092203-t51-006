@@ -20,3 +20,8 @@ DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # 服务端口（使用非常见端口）
 APP_PORT = 7634
+
+# 预约默认保留时长（到站时间之后多少分钟到期）与最长保留时长
+DEFAULT_RESERVATION_WINDOW_MINUTES = 15
+MAX_RESERVATION_WINDOW_MINUTES = 120
+

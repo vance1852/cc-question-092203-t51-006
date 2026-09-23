@@ -96,32 +96,70 @@ def test_swap_flow_updates_state():
     ).json()
 
     before_ready = station["battery_ready"]
+    before_available = station["available"]
+
+    # 先预约锁定一份容量
+    r = client.post(
+        "/api/reservations",
+        json={"vehicle_id": vehicle["id"], "station_id": station["id"]},
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
+    rid = r.json()["id"]
+
+    # 锁定后可预约量减一，实物电池数不变
+    s_reserved = client.get(f"/api/stations/{station['id']}", headers=headers).json()
+    assert s_reserved["reserved_count"] == station["reserved_count"] + 1
+    assert s_reserved["available"] == before_available - 1
+
+    # 凭预约履约换电
     swap = client.post(
         "/api/swaps",
-        json={"vehicle_id": vehicle["id"], "station_id": station["id"], "soc_before": 10.0, "soc_after": 100.0},
+        json={"reservation_id": rid, "soc_before": 10.0, "soc_after": 100.0},
         headers=headers,
     )
     assert swap.status_code == 201, swap.text
     assert swap.json()["station_name"] == station["name"]
+    assert swap.json()["reservation_id"] == rid
 
-    # 车辆电量应更新、站点可用电池应减一
+    # 车辆电量应更新、站点可用电池应减一（预留同时销账）
     v_after = client.get(f"/api/vehicles/{vehicle['id']}", headers=headers).json()
     assert v_after["current_soc"] == 100.0
     s_after = client.get(f"/api/stations/{station['id']}", headers=headers).json()
     assert s_after["battery_ready"] == before_ready - 1
+    assert s_after["available"] == before_available - 1
+
+    # 预约已履约，不能重复消费
+    again = client.post(
+        "/api/swaps",
+        json={"reservation_id": rid, "soc_before": 10.0, "soc_after": 100.0},
+        headers=headers,
+    )
+    assert again.status_code == 409
 
 
 def test_swap_invalid_soc():
     headers = _auth_headers()
     stations = client.get("/api/stations", headers=headers).json()
-    station = next(s for s in stations if s["battery_ready"] > 0)
-    vehicles = client.get("/api/vehicles", headers=headers).json()
+    station = next(s for s in stations if s["available"] > 0)
+    plate = f"沪EV{uuid.uuid4().hex[:4]}"
+    vehicle = client.post(
+        "/api/vehicles", json={"plate": plate, "model": "换电测试车", "current_soc": 90.0}, headers=headers
+    ).json()
+    r = client.post(
+        "/api/reservations",
+        json={"vehicle_id": vehicle["id"], "station_id": station["id"]},
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
     bad = client.post(
         "/api/swaps",
-        json={"vehicle_id": vehicles[0]["id"], "station_id": station["id"], "soc_before": 90.0, "soc_after": 50.0},
+        json={"reservation_id": r.json()["id"], "soc_before": 90.0, "soc_after": 50.0},
         headers=headers,
     )
     assert bad.status_code == 422
+    # 履约失败不应核销预约
+    assert client.get(f"/api/reservations/{r.json()['id']}", headers=headers).json()["status"] == "pending"
 
 
 def test_dashboard_stats():
