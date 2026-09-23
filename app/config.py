@@ -4,10 +4,10 @@
 """
 import os
 
-# 数据库文件路径（SQLite，本地文件，开箱即用）
+# 数据库文件路径（SQLite，本地文件，开箱即用）；可用 APP_DATABASE_URL 覆盖（测试/部署）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data.db")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DATABASE_URL = os.getenv("APP_DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 # JWT 配置
 SECRET_KEY = os.getenv("APP_SECRET_KEY", "swap-station-admin-dev-secret-key-change-me")
@@ -20,3 +20,8 @@ DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # 服务端口（使用非常见端口）
 APP_PORT = 7634
+
+# 预约默认有效时长（分钟）：到站前 10 分钟电话占位
+RESERVATION_DEFAULT_TTL_MINUTES = 15
+# 后台过期扫描间隔（秒）
+RESERVATION_SWEEP_INTERVAL_SECONDS = 30

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
 from ..database import get_db
-from ..models import Vehicle
+from ..models import Reservation, SwapRecord, Vehicle
 from ..schemas import VehicleCreate, VehicleOut, VehicleUpdate
 
 router = APIRouter(prefix="/api/vehicles", tags=["车辆"], dependencies=[Depends(get_current_user)])
@@ -55,6 +55,12 @@ def delete_vehicle(vehicle_id: int, db: Session = Depends(get_db)):
     vehicle = db.get(Vehicle, vehicle_id)
     if not vehicle:
         raise HTTPException(status_code=404, detail="车辆不存在")
+    referenced = (
+        db.query(SwapRecord.id).filter(SwapRecord.vehicle_id == vehicle_id).first()
+        or db.query(Reservation.id).filter(Reservation.vehicle_id == vehicle_id).first()
+    )
+    if referenced:
+        raise HTTPException(status_code=409, detail="该车辆已有预约或换电记录，不能删除")
     db.delete(vehicle)
     db.commit()
     return None

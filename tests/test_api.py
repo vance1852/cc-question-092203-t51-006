@@ -89,39 +89,81 @@ def test_swap_flow_updates_state():
     headers = _auth_headers()
     # 取一个有满电电池的运营站
     stations = client.get("/api/stations", headers=headers).json()
-    station = next(s for s in stations if s["battery_ready"] > 0)
+    station = next(s for s in stations if s["battery_ready"] - s["battery_held"] > 0)
     plate = f"沪EV{uuid.uuid4().hex[:4]}"
     vehicle = client.post(
         "/api/vehicles", json={"plate": plate, "model": "换电测试车", "current_soc": 10.0}, headers=headers
     ).json()
 
     before_ready = station["battery_ready"]
+    # 换电前先预约占位
+    rsv = client.post(
+        "/api/reservations",
+        json={"vehicle_id": vehicle["id"], "station_id": station["id"], "ttl_minutes": 15},
+        headers=headers,
+    )
+    assert rsv.status_code == 201, rsv.text
+    code = rsv.json()["code"]
+    # 占位后可预约量减一，但满电电池总数不变
+    s_held = client.get(f"/api/stations/{station['id']}", headers=headers).json()
+    assert s_held["battery_ready"] == before_ready
+    assert s_held["available_capacity"] == before_ready - 1
+
     swap = client.post(
         "/api/swaps",
-        json={"vehicle_id": vehicle["id"], "station_id": station["id"], "soc_before": 10.0, "soc_after": 100.0},
+        json={
+            "vehicle_id": vehicle["id"],
+            "station_id": station["id"],
+            "reservation_code": code,
+            "soc_before": 10.0,
+            "soc_after": 100.0,
+        },
         headers=headers,
     )
     assert swap.status_code == 201, swap.text
     assert swap.json()["station_name"] == station["name"]
+    assert swap.json()["reservation_code"] == code
 
-    # 车辆电量应更新、站点可用电池应减一
+    # 车辆电量应更新、站点可用电池应减一（锁定转为实际扣减）
     v_after = client.get(f"/api/vehicles/{vehicle['id']}", headers=headers).json()
     assert v_after["current_soc"] == 100.0
     s_after = client.get(f"/api/stations/{station['id']}", headers=headers).json()
     assert s_after["battery_ready"] == before_ready - 1
+    assert s_after["battery_held"] == s_held["battery_held"] - 1
 
 
 def test_swap_invalid_soc():
     headers = _auth_headers()
     stations = client.get("/api/stations", headers=headers).json()
-    station = next(s for s in stations if s["battery_ready"] > 0)
-    vehicles = client.get("/api/vehicles", headers=headers).json()
+    station = next(s for s in stations if s["battery_ready"] - s["battery_held"] > 0)
+    plate = f"浙EV{uuid.uuid4().hex[:4]}"
+    vehicle = client.post(
+        "/api/vehicles", json={"plate": plate, "model": "电量校验车", "current_soc": 80.0}, headers=headers
+    ).json()
+    rsv = client.post(
+        "/api/reservations",
+        json={"vehicle_id": vehicle["id"], "station_id": station["id"], "ttl_minutes": 15},
+        headers=headers,
+    )
+    assert rsv.status_code == 201, rsv.text
+    code = rsv.json()["code"]
     bad = client.post(
         "/api/swaps",
-        json={"vehicle_id": vehicles[0]["id"], "station_id": station["id"], "soc_before": 90.0, "soc_after": 50.0},
+        json={
+            "vehicle_id": vehicle["id"],
+            "station_id": station["id"],
+            "reservation_code": code,
+            "soc_before": 90.0,
+            "soc_after": 50.0,
+        },
         headers=headers,
     )
     assert bad.status_code == 422
+    # 履约失败不得占用：预约仍有效、库存未扣
+    held = client.get(
+        "/api/reservations", params={"status": "held", "vehicle_id": vehicle["id"]}, headers=headers
+    ).json()
+    assert len(held) == 1
 
 
 def test_dashboard_stats():

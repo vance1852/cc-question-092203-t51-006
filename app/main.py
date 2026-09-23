@@ -6,21 +6,28 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .routers import auth, dashboard, stations, swaps, vehicles
+from .routers import auth, dashboard, reservations, stations, swaps, vehicles
 from .seed import init_db
+from .sweeper import ReservationSweeper
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时初始化数据库（建表 + 种子数据）
+    # 启动时初始化数据库（建表 + 种子数据 + 重启后识别过期预约）
     init_db()
-    yield
+    # 后台周期性扫描到期预约，释放爽约名额
+    sweeper = ReservationSweeper()
+    sweeper.start()
+    try:
+        yield
+    finally:
+        sweeper.stop()
 
 
 app = FastAPI(
     title="换电站运营管理平台 API",
-    description="新能源物流车换电站后台管理（纯后端）。",
-    version="1.0.0",
+    description="新能源物流车换电站后台管理（纯后端），支持持久化预约与凭约换电。",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -33,5 +40,6 @@ def health():
 app.include_router(auth.router)
 app.include_router(stations.router)
 app.include_router(vehicles.router)
+app.include_router(reservations.router)
 app.include_router(swaps.router)
 app.include_router(dashboard.router)

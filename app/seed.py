@@ -1,24 +1,59 @@
-"""首次启动时初始化数据库：建表 + 内置管理员 + 种子业务数据。"""
+"""首次启动时初始化数据库：建表 + 内置管理员 + 种子业务数据。
+
+启动时还会执行一次预约过期扫描，使服务重启后仍能正确识别
+待履约（held）与已过期（expired）的预约并归还容量。
+"""
 from datetime import datetime, timedelta
 
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from .auth import hash_password
 from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 from .database import Base, SessionLocal, engine
 from .models import Station, SwapRecord, User, Vehicle
+from .services.reservations import expire_due_reservations
 
 
 def init_db() -> None:
-    """创建所有表并灌入种子数据（幂等：已存在则跳过）。"""
+    """创建所有表、补齐旧库结构并灌入种子数据（幂等：已存在则跳过）。"""
     Base.metadata.create_all(bind=engine)
+    _ensure_schema()
     db: Session = SessionLocal()
     try:
         _seed_admin(db)
         _seed_business(db)
+        # 重启后立即识别在停机期间到期的预约，释放其锁定容量
+        released = expire_due_reservations(db)
         db.commit()
+        if released:
+            import logging
+
+            logging.getLogger("app.seed").info("启动扫描释放了 %s 份过期预约", released)
     finally:
         db.close()
+
+
+def _ensure_schema() -> None:
+    """为早期版本的 SQLite 库补齐新增列（create_all 不会 ALTER 既有表）。"""
+    # 反射必须在开启写事务之前完成：inspect 会另借连接，写锁占用下会自死锁。
+    inspector = inspect(engine)
+    statements: list[str] = []
+    tables = inspector.get_table_names()
+    if "stations" in tables:
+        columns = {col["name"] for col in inspector.get_columns("stations")}
+        if "battery_held" not in columns:
+            statements.append(
+                "ALTER TABLE stations ADD COLUMN battery_held INTEGER NOT NULL DEFAULT 0"
+            )
+    if "swap_records" in tables:
+        columns = {col["name"] for col in inspector.get_columns("swap_records")}
+        if "reservation_id" not in columns:
+            statements.append("ALTER TABLE swap_records ADD COLUMN reservation_id INTEGER")
+    if statements:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
 
 
 def _seed_admin(db: Session) -> None:
